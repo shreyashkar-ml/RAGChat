@@ -18,7 +18,7 @@ A customisable Retrieval-Augmented Generation (RAG) workspace built with Streaml
    ```bash
    uv venv {your_env_name}
    source {your_env_name}/bin/activate  # Windows: .venv\\Scripts\\activate
-   uv pip install -r rag_chatbot/requirements.txt
+   uv pip install -r requirements.txt
    ```
 2. **Run Streamlit**
    ```bash
