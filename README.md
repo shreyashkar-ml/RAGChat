@@ -25,10 +25,11 @@ A customisable Retrieval-Augmented Generation (RAG) workspace built with Streaml
    streamlit run rag_chatbot/app.py
    ```
 3. **Configure the sidebar**
-   - Choose the LLM backend: `ollama` (default) or `openai`.
+   - Choose the LLM backend: `browser-local` (default) or `openai`.
    - Provide your Ollama host/model or OpenAI API key as needed.
    - Select the emsbeddings backend (`local` vs `openai`).
    - Manage chat sessions: folder buttons switch threads, the pencil toggles inline rename (press Enter to save), and the trash icon removes a conversation.
+   - For `browser-local`, the browser must reach the URL you provide (typically `http://localhost:11434`) and the endpoint has to return permissive CORS headers.
 4. **Crawl or ingest**
    - **Crawl & Index**: give a list of seed URLs, optional path filters, and crawl limits.
    - **Load from Sitemap(s)**: paste sitemap URLs, set limits, and let the app fetch, chunk, and embed in bulk.
@@ -40,6 +41,12 @@ A customisable Retrieval-Augmented Generation (RAG) workspace built with Streaml
    - `Upload Index (.zip)` restores an index without re-running the crawler.
 
 > Need to validate your local model endpoint? Run `python rag_chatbot/test_ollama.py --host http://localhost:11434 --model llama3.1:8b`.
+
+### Browser → Local Ollama flow
+
+- When you pick the `browser-local` backend, the Python app still performs retrieval, but the final LLM call happens from the browser via a tiny component.
+- Ollama must be running on the viewer's machine and expose CORS headers (`Access-Control-Allow-Origin: *`). If native Ollama lacks CORS, place a lightweight proxy (Node `local-cors-proxy`, Flask, nginx, etc.) in front of it.
+- Because requests originate from the end user's browser, each viewer can keep their local models private while using a hosted Streamlit deployment.
 
 ---
 
@@ -80,7 +87,7 @@ rag_chatbot/
 - **Any documentation source**: Swap the seed URLs or sitemap list to target different sites. The crawler respects `allowed_path_prefixes` so you can scope to specific sections (e.g., `/docs/`, `/handbook/onboarding`).
 - **Adaptive title**: The sidebar title field lets you rebrand the interface per project, and chat tabs auto-rename themselves to the first user utterance unless you override them.
 - **Embeddings toggle**: Switch between `local` and `openai` embeddings without rebuilding the UI. The VectorIndex stores embed settings alongside vectors to ensure compatibility when reloading snapshots across machines.
-- **LLM backend toggle**: Use the same interface for local experimentation (Ollama) and hosted inference (OpenAI). Only one environment variable—the OpenAI key—is required when switching to the cloud setup.
+- **LLM backend toggle**: Use the same interface for browser-mediated local experimentation and hosted inference (OpenAI). Only one environment variable—the OpenAI key—is required when switching to the cloud setup.
 
 ### Scaling & Operational Comfort
 - **Batch-friendly ingestion**: Both the crawler and sitemap loader accept limits to throttle network usage. Chunk size/overlap sliders help balance recall vs. cost for different content densities.

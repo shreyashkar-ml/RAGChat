@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from pathlib import Path
 from typing import List, Dict
@@ -10,10 +11,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from rag_chatbot.components.browser_local import invoke_browser_local
 from rag_chatbot.rag.embeddings import get_embedder
 from rag_chatbot.rag.index import VectorIndex
 from rag_chatbot.rag.crawl import crawl_gitlab, sitemap_urls, crawl_from_url_list
-from rag_chatbot.rag.llm import get_chat_model
+from rag_chatbot.rag.llm import (
+    DEFAULT_OLLAMA_HOST,
+    DEFAULT_OLLAMA_MODEL,
+    get_chat_model,
+)
 from rag_chatbot.rag.utils import chunk_text
 from rag_chatbot.rag.persist import pack_index, unpack_index
 
@@ -296,15 +302,20 @@ if "index_info" not in st.session_state:
     st.session_state.index_info = None
 if "settings" not in st.session_state:
     st.session_state.settings = {
-        "llm_backend": "ollama",          # "openai" or "ollama"
-        "openai_api_key": "",
-        "ollama_host": "http://localhost:11434",
-        "ollama_model": "",
+        "llm_backend": "browser-local",   # "openai" or "browser-local"
+        "openai_api_key": os.environ.get("OPENAI_API_KEY", ""),
+        "ollama_host": (os.environ.get("OLLAMA_HOST") or DEFAULT_OLLAMA_HOST),
+        "ollama_model": (os.environ.get("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL),
         "embed_backend": "local",         # "openai" or "local"
         "openai_embed_model": "text-embedding-3-large",
         "local_embed_model": "sentence-transformers/all-MiniLM-L6-v2",
         "app_title": DEFAULT_TITLE,
     }
+
+if "browser_llm_request" not in st.session_state:
+    st.session_state.browser_llm_request = None
+if "browser_llm_counter" not in st.session_state:
+    st.session_state.browser_llm_counter = 0
 
 
 def ensure_index() -> VectorIndex | None:
@@ -348,21 +359,34 @@ with st.sidebar:
     )
     st.session_state.settings["app_title"] = app_title_input.strip() or DEFAULT_TITLE
 
-    st.session_state.settings["llm_backend"] = st.selectbox(
-        "LLM backend", ["openai", "ollama"], index=1
+    llm_options = ["openai", "browser-local"]
+    current_backend = st.session_state.settings.get("llm_backend", "browser-local")
+    default_backend_index = (
+        llm_options.index(current_backend)
+        if current_backend in llm_options
+        else llm_options.index("browser-local")
     )
-    if st.session_state.settings["llm_backend"] == "openai":
+    st.session_state.settings["llm_backend"] = st.selectbox(
+        "LLM backend", llm_options, index=default_backend_index
+    )
+    backend_choice = st.session_state.settings["llm_backend"]
+    if backend_choice == "openai":
         st.session_state.settings["openai_api_key"] = st.text_input(
             "OpenAI API Key", type="password"
         )
-    else:
+    else:  # browser-local
         st.session_state.settings["ollama_host"] = st.text_input(
-            "Ollama Host", value=st.session_state.settings["ollama_host"]
+            "Browser-accessible Ollama host",
+            value=st.session_state.settings.get("ollama_host", DEFAULT_OLLAMA_HOST),
+            help="What the browser should call, usually http://localhost:11434 or a CORS-enabled proxy.",
         )
         st.session_state.settings["ollama_model"] = st.text_input(
-            "Ollama Model",
-            value=st.session_state.settings.get("ollama_model", ""),
-            placeholder="Enter the Ollama model name (e.g. llama3.1:8b-instruct)",
+            "Local model for browser calls",
+            value=st.session_state.settings.get("ollama_model", DEFAULT_OLLAMA_MODEL),
+            help="Must be pulled into the user's local Ollama instance.",
+        )
+        st.info(
+            "The request runs in the user's browser. Ensure their local Ollama allows CORS or use a localhost proxy."
         )
 
     embed_options = ["local", "openai"]
@@ -382,6 +406,9 @@ with st.sidebar:
         st.session_state.settings["local_embed_model"] = st.text_input(
             "Local embed model", value=st.session_state.settings["local_embed_model"]
         )
+
+    if backend_choice != "browser-local" and st.session_state.browser_llm_request is not None:
+        st.session_state.browser_llm_request = None
 
     st.divider()
     st.subheader("Chat Sessions")
@@ -691,30 +718,94 @@ if prompt:
             {"role": "user", "content": f"Question: {prompt}\n\nContext:\n{context}"},
         ]
 
-        # Get LLM
-        chat = get_chat_model(
-            backend=st.session_state.settings["llm_backend"],
-            openai_key=st.session_state.settings.get("openai_api_key") or None,
-            ollama_host=st.session_state.settings.get("ollama_host"),
-            ollama_model=st.session_state.settings.get("ollama_model"),
-        )
+        backend_choice = st.session_state.settings["llm_backend"]
 
-        # Stream tokens
-        with st.chat_message("assistant"):
-            container = st.empty()
-            buf = ""
-            try:
-                for tok in chat.stream(messages):
-                    if tok:
-                        buf += tok
-                        container.markdown(buf)
-                # Append citations block
+        if backend_choice == "browser-local":
+            current_chat_id = current_chat["id"]
+            turn_id = len(current_chat["messages"])
+            pending = st.session_state.browser_llm_request
+            if (
+                pending is None
+                or pending.get("chat_id") != current_chat_id
+                or pending.get("turn_id") != turn_id
+            ):
+                st.session_state.browser_llm_counter += 1
+                st.session_state.browser_llm_request = {
+                    "chat_id": current_chat_id,
+                    "turn_id": turn_id,
+                    "messages": messages,
+                    "citations": citations,
+                    "host": st.session_state.settings.get("ollama_host")
+                    or DEFAULT_OLLAMA_HOST,
+                    "model": st.session_state.settings.get("ollama_model")
+                    or DEFAULT_OLLAMA_MODEL,
+                    "trigger": st.session_state.browser_llm_counter,
+                }
+                pending = st.session_state.browser_llm_request
+
+            with st.chat_message("assistant"):
+                container = st.empty()
+                result = invoke_browser_local(
+                    messages=pending["messages"],
+                    model=pending["model"],
+                    host=pending["host"],
+                    trigger=pending["trigger"],
+                    key=f"browser-local-{pending['chat_id']}",
+                )
+
+                if result is None:
+                    container.info(
+                        f"Waiting for the browser to reach {pending['host']}/api/chat…\n"
+                        "Ensure Ollama is running locally with permissive CORS settings."
+                    )
+                    st.stop()
+
+                if not isinstance(result, dict) or not result.get("ok"):
+                    error_detail = (
+                        result.get("error") if isinstance(result, dict) else "Unknown error"
+                    )
+                    container.error(
+                        "Browser-local call failed. Check Ollama logs / browser console.\n"
+                        f"Error: {error_detail}"
+                    )
+                    st.session_state.browser_llm_request = None
+                    st.stop()
+
+                content_text = result.get("content") or ""
+                display_text = content_text or "(Ollama returned no content)"
                 if citations:
                     cites_md = "\n\n" + "\n".join(
                         [f"[{i}] {title} — {url}" for i, title, url in citations]
                     )
-                    buf += cites_md
-                    container.markdown(buf)
-                add_message("assistant", buf)
-            except Exception as e:
-                container.error(f"Generation failed: {e}")
+                    display_text += cites_md
+                container.markdown(display_text)
+                add_message("assistant", display_text)
+                st.session_state.browser_llm_request = None
+        else:
+            # Get LLM
+            chat = get_chat_model(
+                backend=backend_choice,
+                openai_key=st.session_state.settings.get("openai_api_key") or None,
+                ollama_host=st.session_state.settings.get("ollama_host"),
+                ollama_model=st.session_state.settings.get("ollama_model"),
+            )
+
+            # Stream tokens
+            with st.chat_message("assistant"):
+                container = st.empty()
+                buf = ""
+                try:
+                    for tok in chat.stream(messages):
+                        if tok:
+                            buf += tok
+                            container.markdown(buf)
+                    # Append citations block
+                    if citations:
+                        cites_md = "\n\n" + "\n".join(
+                            [f"[{i}] {title} — {url}" for i, title, url in citations]
+                        )
+                        buf += cites_md
+                        container.markdown(buf)
+                    add_message("assistant", buf)
+                except Exception as e:
+                    container.error(f"Generation failed: {e}")

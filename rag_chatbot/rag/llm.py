@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from typing import Iterable, List, Dict, Optional
 
 
@@ -25,12 +27,16 @@ class OpenAIChat(ChatModel):
                 yield token
 
 
+DEFAULT_OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+DEFAULT_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+
+
 class OllamaChat(ChatModel):
-    def __init__(self, host: str = "http://localhost:11434", model: str = "llama3.1:8b"):
+    def __init__(self, host: Optional[str] = None, model: Optional[str] = None):
         import requests  # noqa: F401 - ensure available
 
-        self.host = host.rstrip("/")
-        self.model = model
+        self.host = (host or DEFAULT_OLLAMA_HOST).rstrip("/")
+        self.model = model or DEFAULT_OLLAMA_MODEL
 
     def stream(self, messages: List[Dict[str, str]]):
         import json
@@ -95,4 +101,4 @@ def get_chat_model(
         if not openai_key:
             raise ValueError("OpenAI key required for openai backend")
         return OpenAIChat(api_key=openai_key)
-    return OllamaChat(host=ollama_host or "http://localhost:11434", model=ollama_model or "llama3.1:8b")
+    return OllamaChat(host=ollama_host, model=ollama_model)

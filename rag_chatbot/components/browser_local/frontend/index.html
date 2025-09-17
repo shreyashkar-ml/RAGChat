@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Browser Local Ollama</title>
+    <script src="https://unpkg.com/streamlit-component-lib@1.4.0/dist/index.js"></script>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 12px;
+        background: transparent;
+        color: inherit;
+      }
+      #status {
+        white-space: pre-wrap;
+        font-family: "Fira Code", "SFMono-Regular", Menlo, Consolas, monospace;
+        border-radius: 8px;
+        padding: 10px;
+        border: 1px solid rgba(148, 163, 184, 0.6);
+        background: rgba(148, 163, 184, 0.1);
+        min-height: 1.5em;
+      }
+      .small {
+        font-size: 12px;
+        color: rgba(148, 163, 184, 0.8);
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status">Waiting for request…</div>
+    <div class="small" id="hint"></div>
+    <script>
+      const statusBlock = document.getElementById("status");
+      const hintBlock = document.getElementById("hint");
+
+      const setStatus = (text) => {
+        statusBlock.textContent = text;
+        Streamlit.setFrameHeight(document.body.scrollHeight);
+      };
+
+      const setHint = (text) => {
+        hintBlock.textContent = text || "";
+        Streamlit.setFrameHeight(document.body.scrollHeight);
+      };
+
+      let lastTrigger = null;
+
+      const normalizeHost = (host) => {
+        if (!host) {
+          return "http://localhost:11434";
+        }
+        return host.endsWith("/") ? host.slice(0, -1) : host;
+      };
+
+      const handleRender = async (event) => {
+        const { args } = event.detail;
+        const { messages, model, host, trigger } = args;
+
+        if (!trigger || trigger === lastTrigger) {
+          return;
+        }
+
+        lastTrigger = trigger;
+
+        if (!Array.isArray(messages) || messages.length === 0) {
+          setStatus("No messages were provided to send to Ollama.");
+          Streamlit.setComponentValue({ ok: false, error: "Missing messages" });
+          return;
+        }
+
+        const baseHost = normalizeHost(host);
+        const targetUrl = `${baseHost}/api/chat`;
+        setStatus(`Contacting Ollama at ${targetUrl}…`);
+        setHint("If this hangs, confirm Ollama is running locally and exposes permissive CORS headers.");
+
+        const payload = {
+          model: model || "llama3.1:8b",
+          messages,
+          stream: false,
+        };
+
+        try {
+          const response = await fetch(targetUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+          });
+
+          const rawText = await response.text();
+          let parsed = null;
+          try {
+            parsed = rawText ? JSON.parse(rawText) : null;
+          } catch (err) {
+            // Leave parsed as null; we'll surface raw body instead.
+          }
+
+          if (!response.ok) {
+            const reason = parsed && parsed.error ? parsed.error : rawText || response.statusText;
+            setStatus(`HTTP ${response.status}: ${reason}`);
+            Streamlit.setComponentValue({
+              ok: false,
+              status: response.status,
+              error: reason,
+              raw: parsed ?? rawText,
+            });
+            return;
+          }
+
+          const content = parsed && parsed.message ? parsed.message.content || "" : "";
+          if (content) {
+            setStatus(content);
+          } else {
+            setStatus(parsed ? JSON.stringify(parsed, null, 2) : "Ollama returned an empty response.");
+          }
+          Streamlit.setComponentValue({
+            ok: true,
+            content,
+            raw: parsed ?? rawText,
+          });
+        } catch (error) {
+          const errText = error instanceof Error ? error.message : String(error);
+          setStatus(`Fetch failed: ${errText}`);
+          setHint("Browser devtools → Network tab usually shows blocked CORS requests.");
+          Streamlit.setComponentValue({ ok: false, error: errText });
+        }
+      };
+
+      Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, handleRender);
+      Streamlit.setComponentReady();
+      Streamlit.setFrameHeight(document.body.scrollHeight);
+    </script>
+  </body>
+</html>
