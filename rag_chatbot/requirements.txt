@@ -1,0 +1,15 @@
+# Core
+streamlit>=1.36.0
+requests>=2.31.0
+beautifulsoup4>=4.12.3
+numpy>=1.26.0
+
+# Embeddings
+openai>=1.40.0
+sentence-transformers>=3.0.1
+
+# Vector index (Linux)
+faiss-cpu>=1.7.4; platform_system == "Linux"
+
+# Local vector DB
+chromadb>=0.5.3
